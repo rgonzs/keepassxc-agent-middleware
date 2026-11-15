@@ -45,6 +45,7 @@ func start(t *testing.T, keyring agent.Agent, unlock Unlocker, expected string) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { original.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		for {
