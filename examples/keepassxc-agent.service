@@ -1,0 +1,14 @@
+[Unit]
+Description=KeePassXC SSH agent middleware
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/ABSOLUTE/PATH/keepassxc-agent run --listen %h/.keepassxc-agent/agent.sock
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=graphical-session.target
