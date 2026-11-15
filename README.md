@@ -37,6 +37,14 @@ El instalador ya oculta el proceso de servicio en Windows. Si prefieres distribu
 go build -trimpath -ldflags="-H=windowsgui" -o bin/keepassxc-agent-background.exe ./cmd/keepassxc-agent
 ```
 
+## Descargar binarios de GitHub Actions
+
+El workflow **Test and build** ejecuta las pruebas en macOS, Linux y Windows. Si pasan los tres sistemas, compila y publica seis artifacts: uno por sistema (`darwin`, `linux`, `windows`) y arquitectura (`amd64`, `arm64`).
+
+En GitHub abre **Actions → Test and build → una ejecución completada → Artifacts** y descarga `keepassxc-agent-SISTEMA-ARQUITECTURA`. Cada artifact contiene un paquete con el ejecutable y este README: `.tar.gz` para macOS/Linux (conserva el permiso de ejecución) y `.zip` para Windows. Después de extraerlo puedes ejecutar `keepassxc-agent install` o `keepassxc-agent.exe install` desde esa carpeta.
+
+Los artifacts se conservan durante 30 días. Se generan en pushes, pull requests y ejecuciones manuales con **Run workflow**. Son descargas de una ejecución de Actions; este workflow no crea una GitHub Release.
+
 ## Preparar KeePassXC
 
 1. Mantén KeePassXC abierto en tu sesión gráfica, con la bóveda cargada aunque esté bloqueada.

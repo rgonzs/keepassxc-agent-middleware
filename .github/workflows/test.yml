@@ -1,7 +1,13 @@
-name: Test
-on: [push, pull_request]
+name: Test and build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   test:
     strategy:
@@ -16,4 +22,43 @@ jobs:
           go-version-file: go.mod
       - run: go vet ./...
       - run: go test -race ./...
-      - run: go build ./cmd/keepassxc-agent
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [darwin, linux, windows]
+        goarch: [amd64, arm64]
+    env:
+      CGO_ENABLED: '0'
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      BINARY: keepassxc-agent${{ matrix.goos == 'windows' && '.exe' || '' }}
+      PACKAGE: keepassxc-agent-${{ matrix.goos }}-${{ matrix.goarch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build binary
+        run: go build -trimpath -o "dist/$BINARY" ./cmd/keepassxc-agent
+      - name: Package binary and instructions
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cp README.md dist/README.md
+          if [ "$GOOS" = windows ]; then
+            zip -j "artifacts/$PACKAGE.zip" "dist/$BINARY" dist/README.md
+          else
+            tar -czf "artifacts/$PACKAGE.tar.gz" -C dist "$BINARY" README.md
+          fi
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: keepassxc-agent-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 30
