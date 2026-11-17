@@ -95,11 +95,16 @@ type SystemManager struct{}
 func command(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	hideWindow(cmd)
-	data, err := cmd.CombinedOutput()
+	// Only stdout is the command's result. Windows PowerShell can emit
+	// informational CLIXML on stderr even when the command succeeds.
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
 	if err != nil {
-		return string(data), fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(data)))
+		data := stdout.String() + stderr.String()
+		return data, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(data))
 	}
-	return strings.TrimSpace(string(data)), nil
+	return strings.TrimSpace(stdout.String()), nil
 }
 func powershell(ctx context.Context, script string) (string, error) {
 	return command(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", encodedScript("$ErrorActionPreference = 'Stop'; "+script))
