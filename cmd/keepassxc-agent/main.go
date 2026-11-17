@@ -36,13 +36,14 @@ func execute(args []string, stdout, stderr io.Writer) error {
 	if command == "help" || command == "-h" || command == "--help" {
 		fmt.Fprintln(stdout, `KeePassXC SSH agent middleware
 
-Usage: keepassxc-agent <run|status|paths|install|uninstall> [options]
+Usage: keepassxc-agent <run|status|paths|install|uninstall|tray> [options]
 
   run     Listen for SSH agent requests; unlock KeePassXC only when needed.
   status  Check proxy, original SSH agent and KeePassXC; never trigger unlock.
   paths   Print resolved endpoints as JSON (uses installed config if present).
   install Install and start a per-user login service; configure SSH with a backup.
   uninstall Stop and remove the managed service and SSH block; preserve other edits.
+  tray    Open the Windows notification-area controller (proxy runs separately).
 
 Installer options: --dry-run, --no-ssh (install only), --listen, --upstream,
                    --browser, --fingerprint, --timeout. Use install --help.
@@ -63,6 +64,9 @@ Keep KeePassXC connected to the original agent. Point SSH IdentityAgent at
 	}
 	if command == "install" || command == "uninstall" {
 		return installation(command, args[1:], stdout, stderr)
+	}
+	if command == "tray" {
+		return runTray(args[1:])
 	}
 	if command != "run" && command != "status" && command != "paths" {
 		return fmt.Errorf("unknown command %q; use help", command)

@@ -2,7 +2,7 @@
 
 Proxy SSH escrito en Go para macOS, Linux y Windows. Cuando SSH necesita una llave que KeePassXC retiró al bloquear la bóveda, solicita el desbloqueo en la interfaz de KeePassXC, espera la carga de la llave y continúa la petición pendiente.
 
-Se ejecuta **como proceso de usuario en segundo plano, sin icono de bandeja**. SSH solo sabe conectarse a un agente; no inicia ejecutables automáticamente. Por eso el proxy debe estar escuchando antes de usar SSH. El trabajo de desbloqueo sí ocurre a demanda. La activación por socket sería otra opción en Unix, pero no ofrece el mismo mecanismo en Windows y no está implementada.
+Se ejecuta **como proceso de usuario en segundo plano**. En Windows incluye un controlador independiente en la bandeja del sistema. SSH solo sabe conectarse a un agente; no inicia ejecutables automáticamente. Por eso el proxy debe estar escuchando antes de usar SSH. El trabajo de desbloqueo sí ocurre a demanda. La activación por socket sería otra opción en Unix, pero no ofrece el mismo mecanismo en Windows y no está implementada.
 
 ```text
 ssh / scp / sftp / git
@@ -31,7 +31,7 @@ En Windows, primero compila con consola para configurar y diagnosticar:
 go build -trimpath -o bin/keepassxc-agent.exe ./cmd/keepassxc-agent
 ```
 
-El instalador ya oculta el proceso de servicio en Windows. Si prefieres distribuir además un binario sin consola, puedes compilar una segunda copia:
+El instalador ejecuta el proceso de servicio sin consola en Windows y conserva su supervisión mediante la tarea programada. Ejecutar `run` manualmente sí mantiene el proceso en la terminal. Si prefieres distribuir además un binario sin consola, puedes compilar una segunda copia:
 
 ```powershell
 go build -trimpath -ldflags="-H=windowsgui" -o bin/keepassxc-agent-background.exe ./cmd/keepassxc-agent
@@ -106,6 +106,18 @@ Host mi-servidor
 Sustituye `S-1-5-21-TU-SID` por el SID completo que aparezca en `paths`. Utiliza el cliente OpenSSH nativo de Windows; si Git usa otro `ssh.exe`, configúralo para utilizar ese cliente. KeePassXC seguirá conectado a `\\.\pipe\openssh-ssh-agent`.
 
 El pipe del proxy tiene una ACL limitada al usuario actual. El pipe de Browser se detecta como `\\.\pipe\org.keepassxc.KeePassXC.BrowserServer_USERNAME`. `--browser` permite corregirlo si tu instalación usa otro nombre.
+
+### Bandeja de Windows
+
+`install` registra e inicia dos tareas del usuario: el proxy y su controlador de bandeja, ambas al iniciar sesión. El icono puede aparecer dentro de los iconos ocultos de Windows. El menú permite consultar el estado, actualizarlo, iniciar, detener o reiniciar el middleware y abrir `agent.log`. La conectividad se comprueba cada 15 segundos sin solicitar el desbloqueo; verde indica disponibilidad, ámbar una conexión pendiente o fallida y gris que el proxy no está accesible. El texto del menú y del tooltip también identifica el estado. La conectividad no demuestra que la bóveda esté desbloqueada.
+
+**Salir de la bandeja** cierra solamente el controlador. **Detener middleware** detiene el proxy y mantiene la bandeja disponible para volver a iniciarlo; las conexiones SSH que dependan del proxy fallarán mientras esté detenido. Para abrir de nuevo el icono:
+
+```powershell
+.\keepassxc-agent.exe tray
+```
+
+La tarea de bandeja usa el nombre de la tarea del proxy con el sufijo `-Tray`. Las reinstalaciones actualizan las dos tareas y `uninstall` retira ambas. Los errores de inicio de la bandeja se guardan en `~/.keepassxc-agent/tray.log`. El controlador usa las API nativas de Windows, sin CGO ni bibliotecas gráficas externas.
 
 ## Estado y opciones
 

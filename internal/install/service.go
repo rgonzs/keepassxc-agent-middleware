@@ -34,6 +34,27 @@ func encodedScript(script string) string {
 	return base64.StdEncoding.EncodeToString(data)
 }
 
+func windowsWorker(binary, arguments string) string {
+	// WindowStyle only hides the PowerShell host. CreateNoWindow must also
+	// apply to the console executable it launches. Wait and propagate its exit
+	// code so Task Scheduler continues supervising the middleware.
+	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+$start = New-Object System.Diagnostics.ProcessStartInfo
+$start.FileName = %s
+$start.Arguments = %s
+$start.UseShellExecute = $false
+$start.CreateNoWindow = $true
+$process = [System.Diagnostics.Process]::Start($start)
+try {
+    $process.WaitForExit()
+    $code = $process.ExitCode
+} finally {
+    $process.Dispose()
+}
+exit $code
+`, ps(binary), ps(arguments))
+}
+
 func (p *Plan) serviceFile() []byte {
 	switch p.OS {
 	case "darwin":
@@ -64,22 +85,29 @@ UMask=0077
 WantedBy=default.target
 `, unitArg(p.Binary), unitArg(p.ConfigPath)))
 	case "windows":
-		// A hidden PowerShell host remains attached to the native child, allowing
-		// Task Scheduler to monitor and restart it without a console window.
-		worker := "& " + ps(p.Binary) + " run --config " + ps(p.ConfigPath) + "; exit $LASTEXITCODE"
+		// Windows paths cannot contain double quotes; ConfigPath ends in
+		// config.json, so quoting it handles spaces without a trailing backslash.
+		worker := windowsWorker(p.Binary, `run --config "`+p.ConfigPath+`"`)
+		trayWorker := windowsWorker(p.Binary, "tray --background")
 		return []byte(fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $name = %s
+$trayName = $name + '-Tray'
 $description = %s
-$old = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
-if ($old -and $old.Description -ne $description) { throw 'Refusing to replace an unrelated scheduled task' }
+foreach ($taskName in @($name, $trayName)) {
+    $old = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($old -and $old.Description -ne $description) { throw 'Refusing to replace an unrelated scheduled task' }
+}
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $action = New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'powershell.exe') -Argument %s
+$trayAction = New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'powershell.exe') -Argument %s
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
 $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $name -Description $description -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+Register-ScheduledTask -TaskName $trayName -Description $description -Action $trayAction -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName $name
-`, ps(p.TaskName), ps("keepassxc-agent:"+p.Root), ps("-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand "+encodedScript(worker))))
+Start-ScheduledTask -TaskName $trayName
+`, ps(p.TaskName), ps("keepassxc-agent:"+p.Root), ps("-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand "+encodedScript(worker)), ps("-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand "+encodedScript(trayWorker))))
 	}
 	return nil
 }
@@ -134,7 +162,14 @@ func (SystemManager) State(ctx context.Context, p *Plan) (string, error) {
 		}
 		return "registered", nil
 	case "windows":
-		return powershell(ctx, "$t = Get-ScheduledTask -TaskName "+ps(p.TaskName)+" -ErrorAction SilentlyContinue; if ($t) { if ($t.Description -ne "+ps("keepassxc-agent:"+p.Root)+") { throw 'Unrelated scheduled task uses this name' }; 'registered' } else { 'absent' }")
+		state, err := powershell(ctx, "$state = 'absent'; foreach ($name in @("+ps(p.TaskName)+", "+ps(p.TaskName+"-Tray")+")) { $t = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue; if ($t) { if ($t.Description -ne "+ps("keepassxc-agent:"+p.Root)+") { throw 'Unrelated scheduled task uses this name' }; $state = 'registered' } }; $state")
+		if err != nil {
+			return "", err
+		}
+		if state != "absent" && state != "registered" {
+			return "", fmt.Errorf("unexpected scheduled task state: %q", state)
+		}
+		return state, nil
 	}
 	return "", errors.New("unsupported service manager")
 }
@@ -149,7 +184,7 @@ func (m SystemManager) Stop(ctx context.Context, p *Plan) error {
 	case "linux":
 		_, err = command(ctx, "systemctl", "--user", "disable", "--now", "keepassxc-agent.service")
 	case "windows":
-		_, err = powershell(ctx, "Stop-ScheduledTask -TaskName "+ps(p.TaskName)+"; Unregister-ScheduledTask -TaskName "+ps(p.TaskName)+" -Confirm:$false")
+		_, err = powershell(ctx, "foreach ($name in @("+ps(p.TaskName+"-Tray")+", "+ps(p.TaskName)+")) { $t = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue; if ($t) { Stop-ScheduledTask -TaskName $name; while ((Get-ScheduledTask -TaskName $name).State -eq 'Running') { Start-Sleep -Milliseconds 100 }; Unregister-ScheduledTask -TaskName $name -Confirm:$false } }")
 	}
 	return err
 }

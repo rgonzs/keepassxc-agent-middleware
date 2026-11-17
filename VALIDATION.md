@@ -39,3 +39,11 @@ Se comprobó también la compilación de los paquetes de pruebas para Windows am
 - Métodos de desbloqueo rápido concretos, como Touch ID o Windows Hello.
 
 No se ha abierto la bóveda personal, cambiado la configuración SSH, instalado servicios ni modificado el agente SSH personal.
+
+## Controlador de bandeja Windows — 17 de noviembre de 2026
+
+- Implementado con Win32 y sin dependencias nuevas: menú nativo, iconos por conectividad, comprobación asíncrona, recuperación tras reiniciar Explorer y exclusión de instancias por usuario/sesión.
+- Proxy y bandeja tienen tareas programadas independientes; abrir manualmente la bandeja usa su tarea registrada para permitir actualizar y desinstalar sin dejar el ejecutable ocupado.
+- Comprobados localmente `go test -race ./...`, compilación Windows amd64 y `go vet` para Windows. Inspeccionados los iconos generados a partir del código.
+- Añadidas pruebas exclusivas de Windows para la ejecución sin consola y propagación del código de salida; registro simulado de las dos tareas y protección de una tarea de bandeja ajena; tamaños ABI de Win32 y aceptación de los recursos de icono. Su compilación se verifica desde macOS; su ejecución corresponde al job Windows de CI.
+- Pendiente la comprobación nativa del menú, las acciones de iniciar/detener/reiniciar, la salida independiente, el reinicio de Explorer, el inicio de sesión y la actualización/desinstalación con tareas reales. No se ejecutó la interfaz Windows desde macOS.
