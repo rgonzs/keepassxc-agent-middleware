@@ -3,6 +3,7 @@ package install
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,7 +29,8 @@ func TestWindowsCLIShimForwardsArgumentsAndExit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	output, err := powershell(ctx, "& "+ps(p.Launcher)+" "+ps("-test.run=^TestWindowsCLIShimHelper$")+" -- "+ps("one two")+" "+ps("it's literal")+"; exit $LASTEXITCODE")
-	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 23 {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 23 {
 		t.Fatalf("shim exit not forwarded: %v: %s", err, output)
 	}
 	var args []string

@@ -7,14 +7,23 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
+func pathFixture(t *testing.T, platform string) Options {
+	t.Helper()
+	if runtime.GOOS == "windows" && platform != "windows" {
+		t.Skip("Unix PATH tests require Unix paths and file permissions")
+	}
+	return fixture(t, platform)
+}
+
 func TestUserPathInstallUpgradeUninstall(t *testing.T) {
 	for _, platform := range []string{"darwin", "linux", "windows"} {
 		t.Run(platform, func(t *testing.T) {
-			o := fixture(t, platform)
+			o := pathFixture(t, platform)
 			o.ConfigurePath = true
 			profile := filepath.Join(o.Home, ".profile")
 			original := []byte("# user's settings without newline")
@@ -84,7 +93,7 @@ func TestUserPathInstallUpgradeUninstall(t *testing.T) {
 func TestUserPathOptOutAndRollback(t *testing.T) {
 	for _, platform := range []string{"darwin", "linux", "windows"} {
 		t.Run(platform, func(t *testing.T) {
-			o := fixture(t, platform)
+			o := pathFixture(t, platform)
 			o.ConfigurePath = true
 			manager := &fakeManager{failNext: 1}
 			p := mustPlan(t, o)
@@ -118,7 +127,7 @@ func TestUserPathOptOutAndRollback(t *testing.T) {
 	}
 }
 func TestPathProfileConcurrentEditAndUnownedLauncher(t *testing.T) {
-	o := fixture(t, "linux")
+	o := pathFixture(t, "linux")
 	o.ConfigurePath = true
 	p := mustPlan(t, o)
 	profile := filepath.Join(o.Home, ".profile")
@@ -163,7 +172,7 @@ func TestWindowsPathOwnership(t *testing.T) {
 func TestUpgradeRetiresLegacyTrayFiles(t *testing.T) {
 	for _, platform := range []string{"darwin", "linux"} {
 		t.Run(platform, func(t *testing.T) {
-			o := fixture(t, platform)
+			o := pathFixture(t, platform)
 			p := mustPlan(t, o)
 			manager := &fakeManager{}
 			if err := p.Install(context.Background(), manager); err != nil {
