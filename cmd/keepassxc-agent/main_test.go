@@ -12,6 +12,10 @@ func TestCLIValidation(t *testing.T) {
 		{"run", "--upstream", "original", "--fingerprint", "invalid"},
 		{"run", "--upstream", "original", "extra"},
 		{"unknown"},
+		{"tray"},
+		{"stop", "unexpected"},
+		{"start", "--listen", "other"},
+		{"restart", "extra"},
 	} {
 		if err := execute(args, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
 			t.Fatalf("accepted %v", args)

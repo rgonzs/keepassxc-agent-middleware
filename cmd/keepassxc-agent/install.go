@@ -31,10 +31,12 @@ func installation(command string, args []string, stdout, stderr io.Writer) error
 	flags.SetOutput(stderr)
 	dry := flags.Bool("dry-run", false, "preview all changes without writing files or invoking a service manager")
 	var noSSH *bool
+	var noPath *bool
 	var listen, upstream, browserPath, expected *string
 	var timeout *time.Duration
 	if command == "install" {
 		noSSH = flags.Bool("no-ssh", false, "do not configure SSH automatically")
+		noPath = flags.Bool("no-path", false, "do not add the CLI to the user PATH")
 		endpoint := transport.DefaultListen()
 		if o.OS != "windows" {
 			endpoint = filepath.Join(o.Home, ".keepassxc-agent", "agent.sock")
@@ -121,6 +123,7 @@ func installation(command string, args []string, stdout, stderr io.Writer) error
 	}
 	o.Config = settings.Config{Listen: *listen, Timeout: timeout.String(), Fingerprint: *expected}
 	o.ConfigureSSH = !*noSSH
+	o.ConfigurePath = !*noPath
 	// Preserve the original explicit upstream/browser policy on repeated installs.
 	if loadErr == nil {
 		o.Config = previous
@@ -162,6 +165,6 @@ func installation(command string, args []string, stdout, stderr io.Writer) error
 	if err := p.Install(ctx, manager); err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, "Installed and started for your user. Run keepassxc-agent status to check connectivity.")
+	fmt.Fprintln(stdout, "Installed and started for your user. Open a new terminal for PATH changes; run keepassxc-agent status to check connectivity.")
 	return nil
 }

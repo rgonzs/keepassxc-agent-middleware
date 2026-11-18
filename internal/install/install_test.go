@@ -17,6 +17,7 @@ import (
 
 type fakeManager struct {
 	state                   string
+	lastBinary              string
 	starts, stops, failNext int
 }
 
@@ -26,7 +27,8 @@ func (m *fakeManager) State(context.Context, *Plan) (string, error) {
 	}
 	return m.state, nil
 }
-func (m *fakeManager) Start(context.Context, *Plan) error {
+func (m *fakeManager) Start(_ context.Context, p *Plan) error {
+	m.lastBinary = p.Binary
 	m.starts++
 	if m.failNext > 0 {
 		m.failNext--
@@ -174,6 +176,9 @@ func TestInstallRollbackAndPreviousServiceRecovery(t *testing.T) {
 	}
 	if manager.state != "registered" {
 		t.Fatal("old service not recovered")
+	}
+	if manager.lastBinary != p.Binary {
+		t.Fatalf("rollback restarted wrong binary: %s", manager.lastBinary)
 	}
 	if !bytes.Equal(mustRead(t, p.ConfigPath), oldConfig) || !bytes.Equal(mustRead(t, p.SSHPath), oldSSH) || !bytes.Equal(mustRead(t, p.ManifestPath), oldManifest) {
 		t.Fatal("old installation not restored")

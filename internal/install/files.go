@@ -54,6 +54,19 @@ type snapshot struct {
 }
 type transaction struct{ before []snapshot }
 
+func (tx *transaction) remove(path string) error {
+	data, exists, err := readRegular(path)
+	if err != nil || !exists {
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	tx.before = append(tx.before, snapshot{path: path, data: data, mode: info.Mode().Perm(), exists: true})
+	return os.Remove(path)
+}
+
 func (tx *transaction) write(path string, data []byte, mode fs.FileMode) error {
 	old, exists, err := readRegular(path)
 	if err != nil {
@@ -100,6 +113,9 @@ func (p *Plan) Install(ctx context.Context, manager Manager) (resultErr error) {
 			return err
 		}
 	}
+	if err := p.checkProfiles(); err != nil {
+		return err
+	}
 	// Refuse a stale plan if the SSH config or install manifest changed after preview.
 	var before []byte
 	if p.managesSSH() {
@@ -143,6 +159,7 @@ func (p *Plan) Install(ctx context.Context, manager Manager) (resultErr error) {
 	}
 	tx := &transaction{}
 	committed := false
+	rollbackPath := func() error { return nil }
 	defer func() {
 		if committed {
 			return
@@ -151,7 +168,7 @@ func (p *Plan) Install(ctx context.Context, manager Manager) (resultErr error) {
 		cleanupCtx, cancel := cleanupContext()
 		defer cancel()
 		stopErr := manager.Stop(cleanupCtx, p)
-		rollbackErr := tx.rollback()
+		rollbackErr := errors.Join(rollbackPath(), tx.rollback())
 		if p.Previous == nil && p.OS == "linux" {
 			if _, ok := manager.(SystemManager); ok {
 				_, reloadErr := command(cleanupCtx, "systemctl", "--user", "daemon-reload")
@@ -161,6 +178,8 @@ func (p *Plan) Install(ctx context.Context, manager Manager) (resultErr error) {
 		var restartErr error
 		if p.Previous != nil && rollbackErr == nil {
 			previousPlan := *p
+			previousPlan.Binary = p.Previous.Binary
+			previousPlan.restoreTray = p.Previous.TrayEnabled
 			if config, err := settings.Load(p.ConfigPath); err == nil {
 				previousPlan.Config = config
 			}
@@ -175,11 +194,20 @@ func (p *Plan) Install(ctx context.Context, manager Manager) (resultErr error) {
 	sort.Strings(paths)
 	for _, path := range paths {
 		mode := fs.FileMode(0600)
-		if path == p.Binary {
+		if path == p.Binary || path == p.Launcher {
 			mode = 0700
 		}
 		if err := tx.write(path, p.Files[path], mode); err != nil {
 			return err
+		}
+	}
+	if p.Previous != nil {
+		for _, path := range []string{p.TrayServicePath, p.TrayAutostartPath, p.Launcher} {
+			if path != "" && p.Previous.Files[path] != "" && p.Files[path] == nil {
+				if err := tx.remove(path); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	if !bytes.Equal(p.SSHBefore, p.SSHAfter) {
@@ -196,6 +224,16 @@ func (p *Plan) Install(ctx context.Context, manager Manager) (resultErr error) {
 			}
 		}
 		if err := tx.write(p.SSHPath, p.SSHAfter, 0600); err != nil {
+			return err
+		}
+	}
+	if err := p.writeProfiles(tx); err != nil {
+		return err
+	}
+	if _, ok := manager.(SystemManager); ok && p.OS == "windows" {
+		rollbackPath, err = p.applyUserPath()
+		if err != nil {
+			rollbackPath = func() error { return nil }
 			return err
 		}
 	}
@@ -235,6 +273,9 @@ func (p *Plan) Uninstall(ctx context.Context, manager Manager) error {
 	if !bytes.Equal(before, p.SSHBefore) {
 		return errors.New("SSH configuration changed; run uninstall again")
 	}
+	if err := p.checkProfiles(); err != nil {
+		return err
+	}
 	if err := manager.Stop(ctx, p); err != nil {
 		return err
 	}
@@ -261,12 +302,26 @@ func (p *Plan) Uninstall(ctx context.Context, manager Manager) error {
 			return err
 		}
 	}
+	if err := p.checkProfiles(); err != nil {
+		return err
+	}
+	pathTx := &transaction{}
+	if err := p.writeProfiles(pathTx); err != nil {
+		return errors.Join(err, pathTx.rollback())
+	}
+	if _, ok := manager.(SystemManager); ok && p.OS == "windows" {
+		if _, err := p.applyUserPath(); err != nil {
+			return errors.Join(err, pathTx.rollback())
+		}
+	}
+	p.Previous.PathEdits = nil
+	p.Previous.UserPathAdded = false
 	p.Previous.SSHBlock = ""
 	if err := saveProgress(); err != nil {
 		return err
 	}
 	for path := range p.Previous.Files {
-		if filepath.Dir(path) == filepath.Join(p.Root, "bin") {
+		if filepath.Dir(path) == filepath.Join(p.Root, "bin") || path == p.Launcher {
 			err = removeBinary(path)
 		} else {
 			err = os.Remove(path)

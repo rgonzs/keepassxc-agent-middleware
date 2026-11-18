@@ -19,28 +19,36 @@ func TestConfigDefaultsSessionUpstreamAndCLIOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, session := range []string{"", "current-session-agent"} {
-		flags := flag.NewFlagSet("test", flag.ContinueOnError)
-		listen := flags.String("listen", "default-listener", "")
-		upstream := flags.String("upstream", session, "")
-		browserPath := flags.String("browser", "default-browser", "")
-		expected := flags.String("fingerprint", "", "")
-		timeout := flags.Duration("timeout", time.Minute, "")
-		logFile := flags.String("log-file", "", "")
-		if err := flags.Parse([]string{"--listen", "explicit-listener"}); err != nil {
-			t.Fatal(err)
-		}
-		if err := applyConfig(flags, path, listen, upstream, browserPath, expected, timeout, logFile); err != nil {
-			t.Fatal(err)
-		}
-		if *listen != "explicit-listener" || *browserPath != "saved-browser" || *timeout != 12*time.Second || *logFile != "saved.log" {
-			t.Fatal("saved configuration or CLI precedence failed")
-		}
-		want := session
-		if want == "" {
-			want = "saved-fallback"
-		}
-		if *upstream != want {
-			t.Fatalf("upstream: %s", *upstream)
+		for _, override := range []bool{false, true} {
+			flags := flag.NewFlagSet("test", flag.ContinueOnError)
+			listen := flags.String("listen", "default-listener", "")
+			upstream := flags.String("upstream", session, "")
+			browserPath := flags.String("browser", "default-browser", "")
+			expected := flags.String("fingerprint", "", "")
+			timeout := flags.Duration("timeout", time.Minute, "")
+			logFile := flags.String("log-file", "", "")
+			args := []string{}
+			wantListen := config.Listen
+			if override {
+				args = []string{"--listen", "explicit-listener"}
+				wantListen = "explicit-listener"
+			}
+			if err := flags.Parse(args); err != nil {
+				t.Fatal(err)
+			}
+			if err := applyConfig(flags, path, listen, upstream, browserPath, expected, timeout, logFile); err != nil {
+				t.Fatal(err)
+			}
+			if *listen != wantListen || *browserPath != "saved-browser" || *timeout != 12*time.Second || *logFile != "saved.log" {
+				t.Fatal("saved configuration or CLI precedence failed")
+			}
+			want := session
+			if want == "" {
+				want = "saved-fallback"
+			}
+			if *upstream != want {
+				t.Fatalf("upstream: %s", *upstream)
+			}
 		}
 	}
 }

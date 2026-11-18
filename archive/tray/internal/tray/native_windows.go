@@ -1,6 +1,7 @@
 package tray
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
@@ -8,6 +9,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"keepassxc-agent-middleware/internal/lifecycle"
 )
 
 var (
@@ -137,6 +139,12 @@ func Run(handlers Handlers) error {
 	}
 	a.window = hwnd
 	defer destroyWindow.Call(hwnd)
+	ctx, stop, err := lifecycle.Context(context.Background())
+	if err != nil {
+		return err
+	}
+	defer stop()
+	go func() { <-ctx.Done(); postMessage.Call(hwnd, 0x10, 0, 0) }()
 	a.data = iconData{
 		Size: uint32(unsafe.Sizeof(iconData{})), Window: hwnd, ID: 1, Callback: wmTray,
 	}

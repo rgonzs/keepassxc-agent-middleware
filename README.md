@@ -2,7 +2,7 @@
 
 Proxy SSH escrito en Go para macOS, Linux y Windows. Cuando SSH necesita una llave que KeePassXC retiró al bloquear la bóveda, solicita el desbloqueo en la interfaz de KeePassXC, espera la carga de la llave y continúa la petición pendiente.
 
-Se ejecuta **como proceso de usuario en segundo plano**. En Windows incluye un controlador independiente en la bandeja del sistema. SSH solo sabe conectarse a un agente; no inicia ejecutables automáticamente. Por eso el proxy debe estar escuchando antes de usar SSH. El trabajo de desbloqueo sí ocurre a demanda. La activación por socket sería otra opción en Unix, pero no ofrece el mismo mecanismo en Windows y no está implementada.
+Se ejecuta **como proceso de usuario en segundo plano**. Se administra desde la CLI; el código de los iconos de los tres sistemas se conserva en `archive/tray/` y queda fuera de la compilación y de los paquetes. SSH solo sabe conectarse a un agente; no inicia ejecutables automáticamente. Por eso el proxy debe estar escuchando antes de usar SSH. El trabajo de desbloqueo sí ocurre a demanda. La activación por socket sería otra opción en Unix, pero no ofrece el mismo mecanismo en Windows y no está implementada.
 
 ```text
 ssh / scp / sftp / git
@@ -19,7 +19,7 @@ ssh / scp / sftp / git
 
 ## Compilar
 
-Instala la versión de Go indicada en `go.mod` o una posterior. No requiere Rust, CGO ni dependencias gráficas.
+Instala la versión de Go indicada en `go.mod` o una posterior. No requiere Rust, CGO, Swift ni dependencias gráficas.
 
 ```sh
 go build -trimpath -o bin/keepassxc-agent ./cmd/keepassxc-agent
@@ -107,17 +107,93 @@ Sustituye `S-1-5-21-TU-SID` por el SID completo que aparezca en `paths`. Utiliza
 
 El pipe del proxy tiene una ACL limitada al usuario actual. El pipe de Browser se detecta como `\\.\pipe\org.keepassxc.KeePassXC.BrowserServer_USERNAME`. `--browser` permite corregirlo si tu instalación usa otro nombre.
 
-### Bandeja de Windows
+### Control desde la terminal
 
-`install` registra e inicia dos tareas del usuario: el proxy y su controlador de bandeja, ambas al iniciar sesión. El icono puede aparecer dentro de los iconos ocultos de Windows. El menú permite consultar el estado, actualizarlo, iniciar, detener o reiniciar el middleware y abrir `agent.log`. La conectividad se comprueba cada 15 segundos sin solicitar el desbloqueo; verde indica disponibilidad, ámbar una conexión pendiente o fallida y gris que el proxy no está accesible. El texto del menú y del tooltip también identifica el estado. La conectividad no demuestra que la bóveda esté desbloqueada.
-
-**Salir de la bandeja** cierra solamente el controlador. **Detener middleware** detiene el proxy y mantiene la bandeja disponible para volver a iniciarlo; las conexiones SSH que dependan del proxy fallarán mientras esté detenido. Para abrir de nuevo el icono:
+Después de instalar y abrir una terminal nueva, puedes controlar el proxy desde PowerShell:
 
 ```powershell
-.\keepassxc-agent.exe tray
+keepassxc-agent stop
+keepassxc-agent start
+keepassxc-agent restart
 ```
 
-La tarea de bandeja usa el nombre de la tarea del proxy con el sufijo `-Tray`. Las reinstalaciones actualizan las dos tareas y `uninstall` retira ambas. Los errores de inicio de la bandeja se guardan en `~/.keepassxc-agent/tray.log`. El controlador usa las API nativas de Windows, sin CGO ni bibliotecas gráficas externas.
+`start` reconoce una instancia propia que ya esté escuchando y evita iniciar otra. `stop` espera la salida del proceso y la liberación del pipe; conserva la tarea de inicio de sesión. Los controles se serializan con la instalación y desinstalación.
+
+Para actualizar, ejecuta `install` desde el ejecutable nuevo. El instalador detiene el proxy y retira una bandeja de versiones anteriores si existe, incluidos procesos que hayan quedado fuera de sus tareas, después de verificar el usuario y el ejecutable registrado. Las versiones nuevas reciben una petición de cierre ordenado; para recuperar versiones anteriores sin ese mecanismo, puede terminar el proceso verificado. No termina procesos por coincidencia de nombre. Si el pipe pertenece a otro ejecutable o no se puede demostrar su pertenencia, se detiene con un diagnóstico que identifica el PID disponible. El arranque comprueba que el pipe lo atienda el binario instalado esperado.
+
+## Comando disponible en el PATH del usuario
+
+`install` crea un lanzador estable y configura el PATH del usuario, sin privilegios de administrador:
+
+| Sistema | Lanzador |
+|---|---|
+| macOS y Linux | `~/.local/bin/keepassxc-agent` |
+| Windows | `%LOCALAPPDATA%\Programs\keepassxc-agent\keepassxc-agent.cmd` |
+
+El lanzador apunta al binario instalado de la versión actual. Las actualizaciones conservan el mismo comando y el servicio usa rutas absolutas, por lo que no depende del PATH. En Windows el lanzador `.cmd` permite actualizar la CLI sin reemplazar un `.exe` en ejecución y funciona desde PowerShell y CMD.
+
+En Unix se añade un bloque identificado a `.profile` y a la configuración de la shell seleccionada por `SHELL`: `.zprofile`/`.zshrc` para zsh, `.bashrc` y el perfil de login existente para bash, o `.config/fish/config.fish` para fish. No se duplican entradas al cargar los archivos varias veces. Los archivos existentes conservan sus permisos; los symlinks y bloques editados se rechazan para no sobrescribir ajustes ajenos. Las ubicaciones personalizadas como `ZDOTDIR` requieren configurar el PATH manualmente.
+
+En Windows se modifica únicamente `HKCU\Environment\Path`, conservando el texto y tipo de las demás entradas, incluidas variables de entorno. Solo se elimina la entrada agregada por el instalador; una entrada preexistente se conserva. La desinstalación también retira únicamente los bloques propios de los perfiles Unix y conserva cambios externos.
+
+Abre una terminal nueva después de instalar. Si no quieres modificar el PATH o utilizas otra shell/configuración personalizada, usa `install --no-path` y agrega el directorio manualmente. `--no-path` también permite retirar una integración anterior manteniendo instalado el servicio.
+
+## Control del proceso en macOS y Linux
+
+Después de instalar, puedes usar los mismos controles en ambos sistemas:
+
+```sh
+keepassxc-agent start
+keepassxc-agent stop
+keepassxc-agent restart
+```
+
+`start` reconoce una instancia propia activa y evita duplicarla. `stop` espera la salida del proceso y la liberación del socket; conserva el plist de inicio de sesión en macOS y la habilitación del servicio en Linux. `restart` realiza una parada y un inicio supervisados. Los controles se serializan con las actualizaciones y la desinstalación.
+
+La recuperación de instancias iniciadas manualmente utiliza las credenciales del socket, el usuario, la identidad de creación del proceso y el ejecutable registrado con su hash. Se solicita primero `SIGTERM`; si no termina, se comprueba otra vez su identidad antes de forzar el cierre. Los procesos ajenos y las definiciones de servicio modificadas se rechazan antes de enviar señales o cambiar el gestor de servicios.
+
+En Linux se requiere systemd de usuario y kernel 5.3 o posterior para usar handles `pidfd`; el comportamiento no depende de KDE, Wayland ni X11. En macOS se utiliza `launchctl` y el `lsof` incluido en el sistema, sin CGO para el proxy. Para actualizar ejecuta `install` desde el binario nuevo; también se contempla que cambie la ruta del socket respecto de la configuración anterior.
+
+## Instancia predeterminada e instancias adicionales
+
+La instalación administra una instancia por usuario: `systemd --user` en Linux, un LaunchAgent en macOS y una tarea programada al iniciar sesión en Windows. Cerrar la terminal no detiene ese proceso.
+
+Sin opciones explícitas de endpoint, `paths`, `status` y `run` usan la configuración instalada cuando existe; en una ejecución sin instalar usan los endpoints predeterminados de la sesión. `run` nunca inicia un duplicado sobre un socket/pipe ya activo: devuelve un error. Los comandos `start`, `stop` y `restart` administran exclusivamente la instancia instalada; `start` es idempotente si ya está activa.
+
+Puedes ejecutar otro proxy en primer plano con un endpoint distinto:
+
+```sh
+keepassxc-agent run --listen "$HOME/.keepassxc-agent/experimental.sock" --log-file "$HOME/.keepassxc-agent/experimental.log"
+keepassxc-agent status --listen "$HOME/.keepassxc-agent/experimental.sock"
+```
+
+En Windows puedes pasar, por ejemplo, `--listen '\\.\pipe\keepassxc-agent-experimental'`. Cada endpoint admite un solo servidor. Las instancias adicionales se detienen con Ctrl+C en su terminal y no reciben inicio automático ni cambios de configuración SSH por ejecutar `run`. Si comparten el mismo KeePassXC, podrían solicitar desbloqueos simultáneos; úsalo para pruebas o necesidades concretas.
+
+## Listar instancias activas
+
+```sh
+keepassxc-agent instances
+keepassxc-agent instances --json
+```
+
+Lista únicamente los proxies activos de tu usuario, con PID, socket/pipe y log, distinguiendo la instancia predeterminada de las adicionales. También acepta el alias `instancias`. El JSON incluye el ejecutable, la configuración y la fecha de registro cuando está disponible.
+
+Cada proxy de esta versión registra su ejecución en `~/.keepassxc-agent/instances/`. El listado comprueba identidad y fecha de creación del proceso y el PID real del servidor del endpoint; ignora registros de procesos terminados o endpoints que ya no atienden. El cierre normal retira su propio registro. Una caída forzada puede dejar un archivo de metadatos, que no se muestra como instancia activa. El comando no envía peticiones SSH, no solicita desbloqueos y no controla ni termina procesos.
+
+La instancia predeterminada instalada de una versión anterior también se puede descubrir, verificando su ejecutable. Las instancias antiguas con endpoints personalizados necesitan reiniciarse con esta versión para registrarse. El listado está limitado a procesos y endpoints accesibles con los permisos de tu usuario.
+
+## Consultar los logs
+
+```sh
+keepassxc-agent logs                 # Últimas 100 líneas.
+keepassxc-agent logs --lines 50      # También acepta -n 50.
+keepassxc-agent logs --follow        # También acepta -f; Ctrl+C termina la lectura.
+keepassxc-agent logs -n 0 -f         # Solo lo que llegue desde ahora.
+```
+
+Lee `log_file` de la configuración instalada. Puedes seleccionar otra configuración con `logs --config RUTA` o un registro directamente con `logs --log-file RUTA`, útil para instancias con un `--listen` adicional. El archivo debe existir; si el proxy manual escribe a stderr, ejecútalo con `run --log-file RUTA` para guardarlo.
+
+El seguimiento detecta reemplazos y truncamientos observados entre comprobaciones. Terminar `logs` no detiene el proxy. Los mismos comandos funcionan en macOS, Linux y Windows.
 
 ## Estado y opciones
 

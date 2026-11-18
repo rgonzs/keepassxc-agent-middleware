@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"keepassxc-agent-middleware/internal/browser"
+	"keepassxc-agent-middleware/internal/instances"
+	"keepassxc-agent-middleware/internal/lifecycle"
 	"keepassxc-agent-middleware/internal/proxy"
 	"keepassxc-agent-middleware/internal/settings"
 	"keepassxc-agent-middleware/internal/transport"
@@ -36,16 +38,19 @@ func execute(args []string, stdout, stderr io.Writer) error {
 	if command == "help" || command == "-h" || command == "--help" {
 		fmt.Fprintln(stdout, `KeePassXC SSH agent middleware
 
-Usage: keepassxc-agent <run|status|paths|install|uninstall|tray> [options]
+Usage: keepassxc-agent <run|status|paths|instances|logs|install|uninstall|start|stop|restart> [options]
 
   run     Listen for SSH agent requests; unlock KeePassXC only when needed.
   status  Check proxy, original SSH agent and KeePassXC; never trigger unlock.
   paths   Print resolved endpoints as JSON (uses installed config if present).
+  instances List running proxies of the current user (supports --json).
+  logs    Show recent log lines; --follow streams new output, --lines N selects the tail.
   install Install and start a per-user login service; configure SSH with a backup.
   uninstall Stop and remove the managed service and SSH block; preserve other edits.
-  tray    Open the Windows notification-area controller (proxy runs separately).
+  start / stop / restart
+          Control the installed proxy without removing its login configuration.
 
-Installer options: --dry-run, --no-ssh (install only), --listen, --upstream,
+Installer options: --dry-run, --no-ssh, --no-path (install only), --listen, --upstream,
                    --browser, --fingerprint, --timeout. Use install --help.
 
 Options:
@@ -62,11 +67,24 @@ Keep KeePassXC connected to the original agent. Point SSH IdentityAgent at
 --listen. See README.md for per-platform login services.`)
 		return nil
 	}
+	if command == "instances" || command == "instancias" {
+		return runInstances(args[1:], stdout, stderr)
+	}
+	if command == "logs" {
+		return runLogs(args[1:], stdout, stderr)
+	}
 	if command == "install" || command == "uninstall" {
 		return installation(command, args[1:], stdout, stderr)
 	}
-	if command == "tray" {
-		return runTray(args[1:])
+	if command == "start" || command == "stop" || command == "restart" {
+		if len(args) != 1 {
+			return fmt.Errorf("usage: keepassxc-agent %s", command)
+		}
+		if err := controlInstalled(command); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "Proxy action completed: %s.\n", command)
+		return nil
 	}
 	if command != "run" && command != "status" && command != "paths" {
 		return fmt.Errorf("unknown command %q; use help", command)
@@ -156,13 +174,23 @@ Keep KeePassXC connected to the original agent. Point SSH IdentityAgent at
 		level = slog.LevelDebug
 	}
 	logger := slog.New(slog.NewTextHandler(logOutput, &slog.HandlerOptions{Level: level}))
+	signals, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	ctx, cancel, err := lifecycle.Context(signals)
+	if err != nil {
+		return fmt.Errorf("register stop handler: %w", err)
+	}
+	defer cancel()
 	listener, err := transport.Listen(*listen)
 	if err != nil {
 		return fmt.Errorf("listen (an existing socket is never overwritten): %w", err)
 	}
 	defer listener.Close()
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
+	unregister, err := instances.Register(settings.Root(), instances.Candidate{Endpoint: *listen, Config: *configPath, LogFile: *logFile})
+	if err != nil {
+		return fmt.Errorf("register running instance: %w", err)
+	}
+	defer unregister()
 	server := proxy.Server{Upstream: *upstream, Fingerprint: *expected, Unlocker: browser.Client{Endpoint: *browserPath}, Timeout: *timeout, Logger: logger}
 	logger.Info("proxy listening", "listen", *listen, "upstream", *upstream)
 	return server.Serve(ctx, listener)

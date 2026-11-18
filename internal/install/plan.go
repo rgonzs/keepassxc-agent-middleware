@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,27 +25,51 @@ type Options struct {
 	Home, OS, Source, UserID string
 	Config                   settings.Config
 	ConfigureSSH             bool
+	ConfigurePath            bool
+	Shell, LocalAppData      string
 }
 
 type Manifest struct {
-	Uninstalling bool              `json:"uninstalling,omitempty"`
-	Version      int               `json:"version"`
-	OS           string            `json:"os"`
-	Files        map[string]string `json:"files"` // Hashes of files owned by this installer.
-	SSHBlock     string            `json:"ssh_block,omitempty"`
-	SSHBackup    string            `json:"ssh_backup,omitempty"`
-	SSHCreated   bool              `json:"ssh_created,omitempty"`
-	Binary       string            `json:"binary"`
+	Uninstalling  bool                `json:"uninstalling,omitempty"`
+	Version       int                 `json:"version"`
+	OS            string              `json:"os"`
+	Files         map[string]string   `json:"files"` // Hashes of files owned by this installer.
+	SSHBlock      string              `json:"ssh_block,omitempty"`
+	SSHBackup     string              `json:"ssh_backup,omitempty"`
+	SSHCreated    bool                `json:"ssh_created,omitempty"`
+	Binary        string              `json:"binary"`
+	TrayEnabled   bool                `json:"tray_enabled,omitempty"`
+	NativeHelper  string              `json:"native_helper,omitempty"`
+	Launcher      string              `json:"launcher,omitempty"`
+	PathEdits     map[string]PathEdit `json:"path_edits,omitempty"`
+	UserPathAdded bool                `json:"user_path_added,omitempty"`
 }
 
 type Plan struct {
 	Options
+	job                                                                             string // Optional isolated service identifier used by integration tests.
 	Root, Binary, ConfigPath, ServicePath, ManifestPath, SSHPath, LogPath, TaskName string
+	TrayServicePath, TrayAutostartPath                                              string
+	restoreTray                                                                     bool // Only used to restore a legacy installation after rollback.
+	Launcher                                                                        string
+	Profiles                                                                        map[string]profileChange
+	PathBefore                                                                      *pathValue
+	PathAfter                                                                       pathValue
 	Files                                                                           map[string][]byte
 	Previous                                                                        *Manifest
 	Manifest                                                                        Manifest
 	SSHBefore, SSHAfter                                                             []byte
 	SSHExists                                                                       bool
+}
+
+func (p *Plan) serviceID() string {
+	if p.job != "" {
+		return p.job
+	}
+	if p.OS == "darwin" {
+		return Label
+	}
+	return "keepassxc-agent.service"
 }
 
 func digest(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
@@ -57,6 +82,10 @@ func locations(o Options) (*Plan, error) {
 		return nil, errors.New("home and user ID are required")
 	}
 	p := &Plan{Options: o, Root: filepath.Join(o.Home, ".keepassxc-agent"), Files: map[string][]byte{}}
+	p.Launcher = p.cliLocation()
+	if !filepath.IsAbs(p.Launcher) {
+		return nil, errors.New("CLI location must be absolute")
+	}
 	p.ConfigPath = filepath.Join(p.Root, "config.json")
 	p.ManifestPath = filepath.Join(p.Root, "install.json")
 	p.SSHPath = filepath.Join(o.Home, ".ssh", "config")
@@ -70,8 +99,11 @@ func locations(o Options) (*Plan, error) {
 	switch o.OS {
 	case "darwin":
 		p.ServicePath = filepath.Join(o.Home, "Library", "LaunchAgents", Label+".plist")
+		p.TrayServicePath = filepath.Join(o.Home, "Library", "LaunchAgents", Label+".tray.plist")
 	case "linux":
 		p.ServicePath = filepath.Join(o.Home, ".config", "systemd", "user", "keepassxc-agent.service")
+		p.TrayServicePath = filepath.Join(o.Home, ".config", "systemd", "user", "keepassxc-agent-tray.service")
+		p.TrayAutostartPath = filepath.Join(o.Home, ".config", "autostart", "keepassxc-agent-tray.desktop")
 	case "windows":
 		p.ServicePath = filepath.Join(p.Root, "task.ps1")
 	}
@@ -94,6 +126,11 @@ func Existing(o Options) (*Plan, error) {
 		return nil, err
 	}
 	p.Binary = p.Previous.Binary
+	p.ConfigurePath = false
+	if err := p.preparePath(); err != nil {
+		return nil, err
+	}
+	p.restoreTray = p.Previous.TrayEnabled
 	if p.managesSSH() {
 		p.SSHBefore, p.SSHExists, err = readRegular(p.SSHPath)
 	}
@@ -150,6 +187,9 @@ func NewPlan(o Options) (*Plan, error) {
 	p.Files[p.Binary] = data
 	p.Files[p.ConfigPath] = append(config, '\n')
 	p.Files[p.ServicePath] = p.serviceFile()
+	if err := p.prepareLauncher(); err != nil {
+		return nil, err
+	}
 	// No untracked file at an installer-owned destination may be overwritten.
 	for path := range p.Files {
 		if _, err := os.Lstat(path); err == nil {
@@ -168,6 +208,13 @@ func NewPlan(o Options) (*Plan, error) {
 	}
 	p.SSHAfter = append([]byte(nil), p.SSHBefore...)
 	p.Manifest = Manifest{Version: 1, OS: o.OS, Files: map[string]string{}, Binary: p.Binary}
+	p.Manifest.TrayEnabled = false
+	if p.ConfigurePath {
+		p.Manifest.Launcher = p.Launcher
+	}
+	if err := p.preparePath(); err != nil {
+		return nil, err
+	}
 	if p.Previous != nil {
 		p.Manifest.SSHBackup = p.Previous.SSHBackup
 		p.Manifest.SSHCreated = p.Previous.SSHCreated
@@ -236,12 +283,23 @@ func (p *Plan) validateManifest(m *Manifest) error {
 	if m.Version != 1 || m.OS != p.OS {
 		return errors.New("unsupported installation manifest")
 	}
+	if m.Launcher != "" && (m.Launcher != p.Launcher || (!m.Uninstalling && m.Files[m.Launcher] == "")) {
+		return errors.New("invalid managed CLI launcher")
+	}
+	if m.UserPathAdded && m.OS != "windows" {
+		return errors.New("invalid registry PATH ownership")
+	}
+	for path, edit := range m.PathEdits {
+		if m.OS == "windows" || !p.allowedProfile(path) || strings.Count(edit.Block, beginPath) != 1 || strings.Count(edit.Block, endPath) != 1 {
+			return errors.New("invalid managed PATH profile")
+		}
+	}
 	binDir := filepath.Join(p.Root, "bin")
 	if filepath.Dir(m.Binary) != binDir || !strings.HasPrefix(filepath.Base(m.Binary), "keepassxc-agent-") {
 		return errors.New("invalid installed binary path")
 	}
 	for path := range m.Files {
-		if path == p.ConfigPath || path == p.ServicePath {
+		if path == p.Launcher || path == p.ConfigPath || path == p.ServicePath || (p.TrayServicePath != "" && path == p.TrayServicePath) || (p.TrayAutostartPath != "" && path == p.TrayAutostartPath) {
 			continue
 		}
 		hash := m.Files[path]
@@ -249,12 +307,24 @@ func (p *Plan) validateManifest(m *Manifest) error {
 		if p.OS == "windows" {
 			suffix = ".exe"
 		}
-		if len(hash) != 64 || filepath.Dir(path) != binDir || filepath.Base(path) != "keepassxc-agent-"+hash[:16]+suffix {
+		valid := len(hash) == 64 && filepath.Dir(path) == binDir
+		if valid {
+			valid = filepath.Base(path) == "keepassxc-agent-"+hash[:16]+suffix || (m.OS == "darwin" && filepath.Base(path) == "keepassxc-agent-tray-"+hash[:16])
+		}
+		if !valid {
 			return fmt.Errorf("unrecognized managed path: %s", path)
 		}
 	}
 	if !m.Uninstalling && (m.Files[m.Binary] == "" || m.Files[p.ConfigPath] == "" || m.Files[p.ServicePath] == "") {
 		return errors.New("installation manifest is incomplete")
+	}
+	if m.NativeHelper != "" && (m.OS != "darwin" || filepath.Dir(m.NativeHelper) != binDir || !strings.HasPrefix(filepath.Base(m.NativeHelper), "keepassxc-agent-tray-") || (!m.Uninstalling && m.Files[m.NativeHelper] == "")) {
+		return errors.New("invalid managed native tray executable")
+	}
+	if !m.Uninstalling && m.TrayEnabled && m.OS != "windows" {
+		if m.Files[p.TrayServicePath] == "" || (m.OS == "linux" && m.Files[p.TrayAutostartPath] == "") || (m.OS == "darwin" && m.NativeHelper == "") {
+			return errors.New("tray installation is incomplete")
+		}
 	}
 	return nil
 }
@@ -295,11 +365,29 @@ func removeSSH(data []byte, block string) ([]byte, error) {
 }
 
 func (p *Plan) Summary() string {
+	cli := p.Manifest.Launcher
+	if cli == "" {
+		cli = "PATH integration disabled"
+	}
 	ssh := "SSH config unchanged"
 	if !bytes.Equal(p.SSHBefore, p.SSHAfter) {
 		ssh = "SSH config: " + p.SSHPath
 	}
-	return fmt.Sprintf("Binary: %s\nConfiguration: %s\nService: %s\n%s\nSSH backup: %s\nLogs: %s\nProxy: %s\n", p.Binary, p.ConfigPath, p.ServicePath, ssh, p.Manifest.SSHBackup, p.LogPath, p.Config.Listen)
+	summary := fmt.Sprintf("Binary: %s\nConfiguration: %s\nService: %s\nCLI: %s\n%s\nSSH backup: %s\nLogs: %s\nProxy: %s\n", p.Binary, p.ConfigPath, p.ServicePath, cli, ssh, p.Manifest.SSHBackup, p.LogPath, p.Config.Listen)
+	paths := []string{}
+	for path, c := range p.Profiles {
+		if !bytes.Equal(c.Before, c.After) {
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		summary += "PATH profile: " + path + "\n"
+	}
+	if p.PathBefore != nil && *p.PathBefore != p.PathAfter {
+		summary += "User PATH: update entry for " + filepath.Dir(p.Launcher) + "\n"
+	}
+	return summary
 }
 
 func Location(o Options) (*Plan, error) { return locations(o) }

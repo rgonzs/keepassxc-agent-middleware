@@ -63,7 +63,30 @@ func localOptions() (install.Options, error) {
 	if current.Uid == "0" {
 		return install.Options{}, errors.New("run install/uninstall as your desktop user, without sudo")
 	}
-	return install.Options{Home: home, OS: runtime.GOOS, UserID: current.Uid}, nil
+	return install.Options{Home: home, OS: runtime.GOOS, UserID: current.Uid, Shell: os.Getenv("SHELL"), LocalAppData: os.Getenv("LOCALAPPDATA")}, nil
+}
+
+func controlInstalled(action string) error {
+	o, err := localOptions()
+	if err != nil {
+		return err
+	}
+	p, err := install.Location(o)
+	if err != nil {
+		return err
+	}
+	p.Previous, err = install.ReadManifest(p.ManifestPath)
+	if err != nil {
+		return fmt.Errorf("read managed installation (run install first): %w", err)
+	}
+	p.Binary = p.Previous.Binary
+	p.Config, err = settings.Load(p.ConfigPath)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := installContext()
+	defer cancel()
+	return (install.SystemManager{}).Control(ctx, p, action)
 }
 
 func installedStatus(out io.Writer) error {

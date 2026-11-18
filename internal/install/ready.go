@@ -24,18 +24,8 @@ func (m SystemManager) Start(ctx context.Context, p *Plan) error {
 	if err := m.start(ctx, p); err != nil {
 		return err
 	}
-	readyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	for {
-		conn, err := transport.Dial(readyCtx, p.Config.Listen)
-		if err == nil {
-			conn.Close()
-			return nil
-		}
-		select {
-		case <-readyCtx.Done():
-			return fmt.Errorf("proxy did not become reachable: %w", readyCtx.Err())
-		case <-time.After(100 * time.Millisecond):
-		}
+	if err := waitEndpoint(ctx, p.Config.Listen, true); err != nil {
+		return err
 	}
+	return verifyStartedProxy(ctx, p)
 }

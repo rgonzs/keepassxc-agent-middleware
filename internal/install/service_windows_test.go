@@ -51,7 +51,7 @@ func TestWindowsWorkerWithoutConsole(t *testing.T) {
 	}
 }
 
-func TestWindowsRegistersIndependentOwnedTasks(t *testing.T) {
+func TestWindowsRegistersOnlyProxyTask(t *testing.T) {
 	p := mustPlan(t, fixture(t, "windows"))
 	// Execute the real registration script, replacing only scheduler commands.
 	// This exercises PowerShell parsing/quoting without registering real tasks.
@@ -68,6 +68,7 @@ function Register-ScheduledTask {
     $script:tasks += [pscustomobject]@{Name=$TaskName; Description=$Description; Argument=$Action.Argument}
 }
 function Start-ScheduledTask { param($TaskName) $script:started += $TaskName }
+function Enable-ScheduledTask { param($TaskName) }
 `
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -82,10 +83,10 @@ function Start-ScheduledTask { param($TaskName) $script:started += $TaskName }
 	if err := json.Unmarshal([]byte(output), &got); err != nil {
 		t.Fatalf("%v: %s", err, output)
 	}
-	if len(got.Tasks) != 2 || len(got.Started) != 2 {
-		t.Fatalf("not both tasks started: %+v", got)
+	if len(got.Tasks) != 1 || len(got.Started) != 1 {
+		t.Fatalf("unexpected scheduled tasks: %+v", got)
 	}
-	if got.Tasks[0].Name != p.TaskName || got.Tasks[1].Name != p.TaskName+"-Tray" {
+	if got.Tasks[0].Name != p.TaskName {
 		t.Fatalf("wrong tasks: %+v", got.Tasks)
 	}
 	for _, task := range got.Tasks {

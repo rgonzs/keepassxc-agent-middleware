@@ -65,10 +65,11 @@ func (p *Plan) serviceFile() []byte {
 <key>ProgramArguments</key><array><string>%s</string><string>run</string><string>--config</string><string>%s</string></array>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 <key>ThrottleInterval</key><integer>10</integer>
+<key>ExitTimeOut</key><integer>5</integer>
 <key>StandardOutPath</key><string>%s</string>
 <key>StandardErrorPath</key><string>%s</string>
 </dict></plist>
-`, Label, xmlText(p.Binary), xmlText(p.ConfigPath), xmlText(p.LogPath), xmlText(p.LogPath)))
+`, p.serviceID(), xmlText(p.Binary), xmlText(p.ConfigPath), xmlText(p.LogPath), xmlText(p.LogPath)))
 	case "linux":
 		return []byte(fmt.Sprintf(`[Unit]
 Description=KeePassXC SSH agent middleware
@@ -79,6 +80,8 @@ Type=exec
 ExecStart=%s run --config %s
 Restart=always
 RestartSec=5
+KillMode=control-group
+TimeoutStopSec=5s
 UMask=0077
 
 [Install]
@@ -88,7 +91,6 @@ WantedBy=default.target
 		// Windows paths cannot contain double quotes; ConfigPath ends in
 		// config.json, so quoting it handles spaces without a trailing backslash.
 		worker := windowsWorker(p.Binary, `run --config "`+p.ConfigPath+`"`)
-		trayWorker := windowsWorker(p.Binary, "tray --background")
 		return []byte(fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $name = %s
 $trayName = $name + '-Tray'
@@ -99,15 +101,13 @@ foreach ($taskName in @($name, $trayName)) {
 }
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $action = New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'powershell.exe') -Argument %s
-$trayAction = New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'powershell.exe') -Argument %s
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
 $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $name -Description $description -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-Register-ScheduledTask -TaskName $trayName -Description $description -Action $trayAction -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+Enable-ScheduledTask -TaskName $name | Out-Null
 Start-ScheduledTask -TaskName $name
-Start-ScheduledTask -TaskName $trayName
-`, ps(p.TaskName), ps("keepassxc-agent:"+p.Root), ps("-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand "+encodedScript(worker)), ps("-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand "+encodedScript(trayWorker))))
+`, ps(p.TaskName), ps("keepassxc-agent:"+p.Root), ps("-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand "+encodedScript(worker))))
 	}
 	return nil
 }
@@ -138,24 +138,30 @@ func powershell(ctx context.Context, script string) (string, error) {
 	return command(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand", encodedScript("$ErrorActionPreference = 'Stop'; "+script))
 }
 func (SystemManager) State(ctx context.Context, p *Plan) (string, error) {
+	return serviceState(ctx, p, command)
+}
+
+type commandRunner func(context.Context, string, ...string) (string, error)
+
+func serviceState(ctx context.Context, p *Plan, run commandRunner) (string, error) {
 	switch p.OS {
 	case "darwin":
-		text, err := command(ctx, "launchctl", "print", "gui/"+p.UserID+"/"+Label)
+		text, err := run(ctx, "launchctl", "print", "gui/"+p.UserID+"/"+p.serviceID())
 		if err != nil {
 			var exit *exec.ExitError
-			if errors.As(err, &exit) && strings.Contains(text, "Could not find service") {
+			if (errors.As(err, &exit) || errors.Is(err, os.ErrNotExist)) && strings.Contains(text, "Could not find service") {
 				return "absent", nil
 			}
 			return "", err
 		}
 		return "registered", nil
 	case "linux":
-		text, err := command(ctx, "systemctl", "--user", "show", "keepassxc-agent.service", "--property=LoadState", "--value")
-		if err != nil {
-			return "", err
-		}
+		text, err := run(ctx, "systemctl", "--user", "show", p.serviceID(), "--property=LoadState", "--value")
 		if text == "not-found" {
 			return "absent", nil
+		}
+		if err != nil {
+			return "", err
 		}
 		if text != "loaded" {
 			return "", fmt.Errorf("unexpected systemd LoadState: %s", text)
@@ -174,36 +180,41 @@ func (SystemManager) State(ctx context.Context, p *Plan) (string, error) {
 	return "", errors.New("unsupported service manager")
 }
 func (m SystemManager) Stop(ctx context.Context, p *Plan) error {
-	state, err := m.State(ctx, p)
-	if err != nil || state == "absent" {
+	if p.OS != "windows" {
+		return stopUnix(ctx, p, true, command)
+	}
+	_, err := m.State(ctx, p)
+	if err != nil {
 		return err
 	}
-	switch p.OS {
-	case "darwin":
-		_, err = command(ctx, "launchctl", "bootout", "gui/"+p.UserID+"/"+Label)
-	case "linux":
-		_, err = command(ctx, "systemctl", "--user", "disable", "--now", "keepassxc-agent.service")
-	case "windows":
-		_, err = powershell(ctx, "foreach ($name in @("+ps(p.TaskName+"-Tray")+", "+ps(p.TaskName)+")) { $t = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue; if ($t) { Stop-ScheduledTask -TaskName $name; while ((Get-ScheduledTask -TaskName $name).State -eq 'Running') { Start-Sleep -Milliseconds 100 }; Unregister-ScheduledTask -TaskName $name -Confirm:$false } }")
-	}
-	return err
+	return stopWindows(ctx, p, true)
 }
 func (SystemManager) start(ctx context.Context, p *Plan) error {
+	if err := startService(ctx, p, command); err != nil {
+		return err
+	}
+	if p.OS != "windows" {
+		return restoreLegacyTray(ctx, p, command)
+	}
+	return nil
+}
+
+func startService(ctx context.Context, p *Plan, run commandRunner) error {
 	switch p.OS {
 	case "darwin":
-		if _, err := command(ctx, "launchctl", "enable", "gui/"+p.UserID+"/"+Label); err != nil {
+		if _, err := run(ctx, "launchctl", "enable", "gui/"+p.UserID+"/"+p.serviceID()); err != nil {
 			return err
 		}
-		_, err := command(ctx, "launchctl", "bootstrap", "gui/"+p.UserID, p.ServicePath)
+		_, err := run(ctx, "launchctl", "bootstrap", "gui/"+p.UserID, p.ServicePath)
 		return err
 	case "linux":
-		if _, err := command(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
+		if _, err := run(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
 			return err
 		}
-		if _, err := command(ctx, "systemctl", "--user", "enable", "keepassxc-agent.service"); err != nil {
+		if _, err := run(ctx, "systemctl", "--user", "enable", p.serviceID()); err != nil {
 			return err
 		}
-		_, err := command(ctx, "systemctl", "--user", "restart", "keepassxc-agent.service")
+		_, err := run(ctx, "systemctl", "--user", "restart", p.serviceID())
 		return err
 	case "windows":
 		data, err := os.ReadFile(p.ServicePath)

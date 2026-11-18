@@ -87,3 +87,21 @@ func TestRecoversOnlyStaleSocket(t *testing.T) {
 		t.Fatal("removed an unrelated file")
 	}
 }
+
+func TestIndependentSocketInstances(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "kam-independent-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	a, err := Listen(filepath.Join(root, "first.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := Listen(filepath.Join(root, "second.sock"))
+	if err != nil {
+		t.Fatalf("different socket rejected: %v", err)
+	}
+	defer b.Close()
+}
