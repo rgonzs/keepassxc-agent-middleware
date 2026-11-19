@@ -3,6 +3,7 @@ package install
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -43,10 +44,26 @@ func fixture(t *testing.T, platform string) Options {
 	t.Helper()
 	home := t.TempDir()
 	source := filepath.Join(t.TempDir(), "source")
-	if err := os.WriteFile(source, []byte("test-binary-v1"), 0700); err != nil {
+	if err := os.WriteFile(source, fixtureBinary(platform, "test-binary-v1"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	return Options{Home: home, OS: platform, Source: source, UserID: "501", ConfigureSSH: true, Config: settings.Config{Listen: filepath.Join(home, ".keepassxc-agent", "agent.sock"), FallbackUpstream: "/tmp/original-agent", Timeout: "60s"}}
+}
+
+func fixtureBinary(platform, version string) []byte {
+	if platform != "windows" {
+		return []byte(version)
+	}
+	// Minimal PE32+ headers for installer tests that never execute the fixture.
+	const peStart, optional = 0x80, 0x80 + 24
+	image := make([]byte, optional+112)
+	copy(image, "MZ")
+	binary.LittleEndian.PutUint32(image[0x3c:], peStart)
+	copy(image[peStart:], "PE\x00\x00")
+	binary.LittleEndian.PutUint16(image[peStart+20:], 112)
+	binary.LittleEndian.PutUint16(image[optional:], 0x20b)
+	binary.LittleEndian.PutUint16(image[optional+68:], 3)
+	return append(image, version...)
 }
 func mustWrite(t *testing.T, path string, data []byte) {
 	t.Helper()
@@ -72,6 +89,42 @@ func mustPlan(t *testing.T, o Options) *Plan {
 		t.Fatal(err)
 	}
 	return p
+}
+
+func TestWindowsUpgradeFromPowerShellTask(t *testing.T) {
+	o := fixture(t, "windows")
+	legacy := mustPlan(t, o)
+	delete(legacy.Files, legacy.Manifest.ServiceBinary)
+	delete(legacy.Manifest.Files, legacy.Manifest.ServiceBinary)
+	legacy.Manifest.ServiceBinary = ""
+	legacyScript := []byte("legacy PowerShell task registration")
+	legacy.Files[legacy.ServicePath] = legacyScript
+	legacy.Manifest.Files[legacy.ServicePath] = digest(legacyScript)
+	manager := &fakeManager{}
+	ctx := context.Background()
+	if err := legacy.Install(ctx, manager); err != nil {
+		t.Fatal(err)
+	}
+
+	mustWrite(t, o.Source, fixtureBinary("windows", "test-binary-v2"))
+	upgrade := mustPlan(t, o)
+	manager.failNext = 1
+	if err := upgrade.Install(ctx, manager); err == nil {
+		t.Fatal("simulated activation failure was ignored")
+	}
+	if manager.lastBinary != legacy.Binary || !bytes.Equal(mustRead(t, legacy.ServicePath), legacyScript) {
+		t.Fatal("failed upgrade did not restore the legacy task")
+	}
+	if err := upgrade.Install(ctx, manager); err != nil {
+		t.Fatal(err)
+	}
+	installed, err := Existing(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installed.serviceBinary() != upgrade.serviceBinary() || installed.serviceBinary() == installed.Binary {
+		t.Fatal("the upgraded task does not have its own background executable")
+	}
 }
 
 func TestInstallRepeatUpgradeUninstallPreservesSSH(t *testing.T) {
@@ -108,12 +161,16 @@ func TestInstallRepeatUpgradeUninstallPreservesSSH(t *testing.T) {
 				t.Fatal("backup was replaced")
 			}
 			// Upgrade to a new content-addressed version; old binary stays tracked.
-			mustWrite(t, o.Source, []byte("test-binary-v2"))
+			mustWrite(t, o.Source, fixtureBinary(platform, "test-binary-v2"))
 			p = mustPlan(t, o)
 			if err := p.Install(context.Background(), manager); err != nil {
 				t.Fatal(err)
 			}
-			if len(p.Manifest.Files) != 4 {
+			wantFiles := 4
+			if platform == "windows" {
+				wantFiles += 2 // One background executable per version.
+			}
+			if len(p.Manifest.Files) != wantFiles {
 				t.Fatalf("previous version not tracked: %d", len(p.Manifest.Files))
 			}
 			// Preserve user changes made after installation, outside the managed block.

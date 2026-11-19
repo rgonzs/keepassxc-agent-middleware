@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"keepassxc-agent-middleware/internal/localfile"
 	"keepassxc-agent-middleware/internal/settings"
 )
 
@@ -100,32 +101,8 @@ func tailStart(file *os.File, size int64, lines int) (int64, error) {
 	}
 	return 0, nil
 }
-func openLog(path string) (*os.File, os.FileInfo, error) {
-	// Reject devices/directories/FIFOs before opening them for a normal log read.
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, nil, errors.New("log must be a regular file")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	info, err = file.Stat()
-	if err != nil {
-		file.Close()
-		return nil, nil, err
-	}
-	if !info.Mode().IsRegular() {
-		file.Close()
-		return nil, nil, errors.New("log must be a regular file")
-	}
-	return file, info, nil
-}
 func initialLogs(path string, lines int, out io.Writer) (os.FileInfo, int64, error) {
-	file, info, err := openLog(path)
+	file, info, err := localfile.Open(path)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -141,7 +118,7 @@ func initialLogs(path string, lines int, out io.Writer) (os.FileInfo, int64, err
 // Reopen on each poll, so following a Windows log does not keep a handle open
 // that would prevent an external log rotation. Follow the filename, not inode.
 func nextLogs(path string, previous os.FileInfo, offset int64, out io.Writer) (os.FileInfo, int64, error) {
-	file, info, err := openLog(path)
+	file, info, err := localfile.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return previous, offset, nil
 	}

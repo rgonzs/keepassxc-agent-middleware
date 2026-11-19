@@ -34,27 +34,6 @@ func encodedScript(script string) string {
 	return base64.StdEncoding.EncodeToString(data)
 }
 
-func windowsWorker(binary, arguments string) string {
-	// WindowStyle only hides the PowerShell host. CreateNoWindow must also
-	// apply to the console executable it launches. Wait and propagate its exit
-	// code so Task Scheduler continues supervising the middleware.
-	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
-$start = New-Object System.Diagnostics.ProcessStartInfo
-$start.FileName = %s
-$start.Arguments = %s
-$start.UseShellExecute = $false
-$start.CreateNoWindow = $true
-$process = [System.Diagnostics.Process]::Start($start)
-try {
-    $process.WaitForExit()
-    $code = $process.ExitCode
-} finally {
-    $process.Dispose()
-}
-exit $code
-`, ps(binary), ps(arguments))
-}
-
 func (p *Plan) serviceFile() []byte {
 	switch p.OS {
 	case "darwin":
@@ -90,7 +69,7 @@ WantedBy=default.target
 	case "windows":
 		// Windows paths cannot contain double quotes; ConfigPath ends in
 		// config.json, so quoting it handles spaces without a trailing backslash.
-		worker := windowsWorker(p.Binary, `run --config "`+p.ConfigPath+`"`)
+		arguments := `run --config "` + p.ConfigPath + `"`
 		return []byte(fmt.Sprintf(`$ErrorActionPreference = 'Stop'
 $name = %s
 $trayName = $name + '-Tray'
@@ -100,14 +79,14 @@ foreach ($taskName in @($name, $trayName)) {
     if ($old -and $old.Description -ne $description) { throw 'Refusing to replace an unrelated scheduled task' }
 }
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-$action = New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'powershell.exe') -Argument %s
+$action = New-ScheduledTaskAction -Execute %s -Argument %s
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
 $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $name -Description $description -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 Enable-ScheduledTask -TaskName $name | Out-Null
 Start-ScheduledTask -TaskName $name
-`, ps(p.TaskName), ps("keepassxc-agent:"+p.Root), ps("-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand "+encodedScript(worker))))
+`, ps(p.TaskName), ps("keepassxc-agent:"+p.Root), ps(p.serviceBinary()), ps(arguments)))
 	}
 	return nil
 }

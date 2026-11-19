@@ -306,7 +306,7 @@ func verifyStartedProxy(ctx context.Context, p *Plan) error {
 	if err != nil {
 		return err
 	}
-	expected, err := os.Stat(p.Binary)
+	expected, err := os.Stat(p.serviceBinary())
 	if err != nil {
 		return err
 	}

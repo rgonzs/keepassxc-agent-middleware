@@ -38,6 +38,7 @@ type Manifest struct {
 	SSHBackup     string              `json:"ssh_backup,omitempty"`
 	SSHCreated    bool                `json:"ssh_created,omitempty"`
 	Binary        string              `json:"binary"`
+	ServiceBinary string              `json:"service_binary,omitempty"`
 	TrayEnabled   bool                `json:"tray_enabled,omitempty"`
 	NativeHelper  string              `json:"native_helper,omitempty"`
 	Launcher      string              `json:"launcher,omitempty"`
@@ -70,6 +71,13 @@ func (p *Plan) serviceID() string {
 		return Label
 	}
 	return "keepassxc-agent.service"
+}
+
+func (p *Plan) serviceBinary() string {
+	if p.Manifest.ServiceBinary != "" {
+		return p.Manifest.ServiceBinary
+	}
+	return p.Binary
 }
 
 func digest(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
@@ -126,6 +134,7 @@ func Existing(o Options) (*Plan, error) {
 		return nil, err
 	}
 	p.Binary = p.Previous.Binary
+	p.Manifest.ServiceBinary = p.Previous.ServiceBinary
 	p.ConfigurePath = false
 	if err := p.preparePath(); err != nil {
 		return nil, err
@@ -184,7 +193,16 @@ func NewPlan(o Options) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	p.Manifest = Manifest{Version: 1, OS: o.OS, Files: map[string]string{}, Binary: p.Binary}
 	p.Files[p.Binary] = data
+	if o.OS == "windows" {
+		background, err := windowsBackgroundImage(data)
+		if err != nil {
+			return nil, err
+		}
+		p.Manifest.ServiceBinary = filepath.Join(p.Root, "bin", "keepassxc-agent-"+digest(background)[:16]+".exe")
+		p.Files[p.Manifest.ServiceBinary] = background
+	}
 	p.Files[p.ConfigPath] = append(config, '\n')
 	p.Files[p.ServicePath] = p.serviceFile()
 	if err := p.prepareLauncher(); err != nil {
@@ -207,8 +225,6 @@ func NewPlan(o Options) (*Plan, error) {
 		return nil, err
 	}
 	p.SSHAfter = append([]byte(nil), p.SSHBefore...)
-	p.Manifest = Manifest{Version: 1, OS: o.OS, Files: map[string]string{}, Binary: p.Binary}
-	p.Manifest.TrayEnabled = false
 	if p.ConfigurePath {
 		p.Manifest.Launcher = p.Launcher
 	}
@@ -317,6 +333,11 @@ func (p *Plan) validateManifest(m *Manifest) error {
 	}
 	if !m.Uninstalling && (m.Files[m.Binary] == "" || m.Files[p.ConfigPath] == "" || m.Files[p.ServicePath] == "") {
 		return errors.New("installation manifest is incomplete")
+	}
+	if m.ServiceBinary != "" && (m.OS != "windows" || filepath.Dir(m.ServiceBinary) != binDir ||
+		!strings.HasPrefix(filepath.Base(m.ServiceBinary), "keepassxc-agent-") ||
+		(!m.Uninstalling && m.Files[m.ServiceBinary] == "")) {
+		return errors.New("invalid managed Windows service executable")
 	}
 	if m.NativeHelper != "" && (m.OS != "darwin" || filepath.Dir(m.NativeHelper) != binDir || !strings.HasPrefix(filepath.Base(m.NativeHelper), "keepassxc-agent-tray-") || (!m.Uninstalling && m.Files[m.NativeHelper] == "")) {
 		return errors.New("invalid managed native tray executable")

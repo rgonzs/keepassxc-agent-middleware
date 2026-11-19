@@ -18,6 +18,7 @@ import (
 	"keepassxc-agent-middleware/internal/browser"
 	"keepassxc-agent-middleware/internal/instances"
 	"keepassxc-agent-middleware/internal/lifecycle"
+	"keepassxc-agent-middleware/internal/localfile"
 	"keepassxc-agent-middleware/internal/proxy"
 	"keepassxc-agent-middleware/internal/settings"
 	"keepassxc-agent-middleware/internal/transport"
@@ -162,7 +163,7 @@ Keep KeePassXC connected to the original agent. Point SSH IdentityAgent at
 	}
 	logOutput := stderr
 	if *logFile != "" {
-		file, err := os.OpenFile(*logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		file, err := localfile.OpenAppend(*logFile)
 		if err != nil {
 			return err
 		}

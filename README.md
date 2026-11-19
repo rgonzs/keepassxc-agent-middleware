@@ -31,11 +31,7 @@ En Windows, primero compila con consola para configurar y diagnosticar:
 go build -trimpath -o bin/keepassxc-agent.exe ./cmd/keepassxc-agent
 ```
 
-El instalador ejecuta el proceso de servicio sin consola en Windows y conserva su supervisión mediante la tarea programada. Ejecutar `run` manualmente sí mantiene el proceso en la terminal. Si prefieres distribuir además un binario sin consola, puedes compilar una segunda copia:
-
-```powershell
-go build -trimpath -ldflags="-H=windowsgui" -o bin/keepassxc-agent-background.exe ./cmd/keepassxc-agent
-```
+El instalador crea una copia del ejecutable sin consola para que el Programador de tareas supervise directamente al proxy. La CLI conserva su consola para comandos como `status`, `logs` y `run`. En una instalación existente, ejecuta `install` desde el binario nuevo con las mismas opciones que usaste inicialmente para actualizar la tarea programada.
 
 ## Descargar binarios de GitHub Actions
 
@@ -213,6 +209,8 @@ El seguimiento detecta reemplazos y truncamientos observados entre comprobacione
 | `--timeout 60s` | Tiempo máximo para esperar el desbloqueo y la carga, incluida la espera por otra solicitud. |
 | `--log-file RUTA` | Añadir logs a un archivo; por defecto usa stderr. El directorio debe existir. |
 | `--verbose` | Logs de diagnóstico sin contenido de mensajes ni llaves. |
+
+Usa rutas dentro de directorios de confianza para la configuración y los logs. La apertura de ambos archivos rechaza enlaces simbólicos y exige archivos regulares. La configuración debe pertenecer al usuario que ejecuta el proxy. En Unix se permite la lectura al grupo y a otros usuarios, y la escritura queda reservada al propietario. En macOS también se rechazan ACL extendidas en la configuración. En Windows, la ACL solo puede conceder escritura al propietario, SYSTEM y el grupo Administradores.
 
 Si tienes otras llaves cargadas, utiliza `--fingerprint` con la huella obtenida de `ssh-add -l` mientras tu llave está cargada en el agente original. Sin ese filtro, un listado con alguna llave se considera suficiente. Una firma fallida para una llave ausente también dispara el desbloqueo; una firma rechazada para una llave que sigue cargada se devuelve sin mostrar un diálogo ajeno al motivo del rechazo.
 

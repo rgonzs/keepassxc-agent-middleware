@@ -14,9 +14,8 @@ import (
 	"time"
 )
 
-// Exercise the actual PowerShell/.NET launch with a console-subsystem child.
-// A hidden window still has a console handle; CreateNoWindow must prevent it.
-func TestWindowsWorkerWithoutConsole(t *testing.T) {
+// Run the background image directly, as the task does, with no hiding flags.
+func TestWindowsBackgroundExecutableWithoutConsole(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "space and apostrophe's")
 	if err := os.Mkdir(root, 0700); err != nil {
 		t.Fatal(err)
@@ -29,18 +28,22 @@ func TestWindowsWorkerWithoutConsole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child := filepath.Join(root, "console helper.exe")
-	if err := os.WriteFile(child, data, 0700); err != nil {
+	background, err := windowsBackgroundImage(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(root, "background helper.exe")
+	if err := os.WriteFile(child, background, 0700); err != nil {
 		t.Fatal(err)
 	}
 	result := filepath.Join(root, "console.txt")
 	t.Setenv("KEEPASSXC_TEST_CONSOLE_RESULT", result)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err = powershell(ctx, windowsWorker(child, `-test.run=^TestWindowsWorkerConsoleHelper$ -- "`+result+`"`))
+	err = exec.CommandContext(ctx, child, "-test.run=^TestWindowsWorkerConsoleHelper$", "--", result).Run()
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 23 {
-		t.Fatalf("worker did not wait for or propagate child exit: %v", err)
+		t.Fatalf("background executable did not return its exit code: %v", err)
 	}
 	data, err = os.ReadFile(result)
 	if err != nil {
@@ -65,7 +68,7 @@ function New-ScheduledTaskPrincipal { param($UserId, $LogonType, $RunLevel) retu
 function New-ScheduledTaskSettingsSet { return 'settings' }
 function Register-ScheduledTask {
     param($TaskName, $Description, $Action, $Trigger, $Principal, $Settings, [switch]$Force)
-    $script:tasks += [pscustomobject]@{Name=$TaskName; Description=$Description; Argument=$Action.Argument}
+    $script:tasks += [pscustomobject]@{Name=$TaskName; Description=$Description; Execute=$Action.Execute; Argument=$Action.Argument}
 }
 function Start-ScheduledTask { param($TaskName) $script:started += $TaskName }
 function Enable-ScheduledTask { param($TaskName) }
@@ -77,7 +80,7 @@ function Enable-ScheduledTask { param($TaskName) }
 		t.Fatal(err)
 	}
 	var got struct {
-		Tasks   []struct{ Name, Description, Argument string }
+		Tasks   []struct{ Name, Description, Execute, Argument string }
 		Started []string
 	}
 	if err := json.Unmarshal([]byte(output), &got); err != nil {
@@ -90,8 +93,9 @@ function Enable-ScheduledTask { param($TaskName) }
 		t.Fatalf("wrong tasks: %+v", got.Tasks)
 	}
 	for _, task := range got.Tasks {
-		if task.Description != "keepassxc-agent:"+p.Root || !strings.Contains(task.Argument, "-WindowStyle Hidden -EncodedCommand") {
-			t.Fatalf("task is not owned or hidden: %+v", task)
+		if task.Description != "keepassxc-agent:"+p.Root || task.Execute != p.Manifest.ServiceBinary ||
+			task.Execute == p.Binary || task.Argument != `run --config "`+p.ConfigPath+`"` {
+			t.Fatalf("task did not select the background executable directly: %+v", task)
 		}
 	}
 	// A conflicting tray task must be rejected before modifying the proxy task.

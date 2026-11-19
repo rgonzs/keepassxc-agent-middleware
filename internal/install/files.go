@@ -179,6 +179,7 @@ func (p *Plan) Install(ctx context.Context, manager Manager) (resultErr error) {
 		if p.Previous != nil && rollbackErr == nil {
 			previousPlan := *p
 			previousPlan.Binary = p.Previous.Binary
+			previousPlan.Manifest = *p.Previous
 			previousPlan.restoreTray = p.Previous.TrayEnabled
 			if config, err := settings.Load(p.ConfigPath); err == nil {
 				previousPlan.Config = config
@@ -194,7 +195,7 @@ func (p *Plan) Install(ctx context.Context, manager Manager) (resultErr error) {
 	sort.Strings(paths)
 	for _, path := range paths {
 		mode := fs.FileMode(0600)
-		if path == p.Binary || path == p.Launcher {
+		if path == p.Binary || path == p.serviceBinary() || path == p.Launcher {
 			mode = 0700
 		}
 		if err := tx.write(path, p.Files[path], mode); err != nil {

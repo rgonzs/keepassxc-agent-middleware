@@ -51,7 +51,7 @@ func TestUserPathInstallUpgradeUninstall(t *testing.T) {
 					t.Fatal("missing PATH block")
 				}
 			}
-			mustWrite(t, o.Source, []byte("version two"))
+			mustWrite(t, o.Source, fixtureBinary(platform, "version two"))
 			next := mustPlan(t, o)
 			if err := next.Install(context.Background(), manager); err != nil {
 				t.Fatal(err)

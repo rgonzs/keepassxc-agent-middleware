@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"keepassxc-agent-middleware/internal/localfile"
 )
 
 type Config struct {
@@ -21,7 +23,7 @@ func Root() string        { home, _ := os.UserHomeDir(); return filepath.Join(ho
 func DefaultPath() string { return filepath.Join(Root(), "config.json") }
 func Load(path string) (Config, error) {
 	var c Config
-	data, err := os.ReadFile(path)
+	data, err := localfile.ReadConfig(path)
 	if err != nil {
 		return c, err
 	}
