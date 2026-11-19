@@ -64,17 +64,23 @@ func checkConfigAccess(file *os.File, _ os.FileInfo) error {
 	if err != nil {
 		return err
 	}
+	return checkConfigSecurity(sd, tokenUser.User.Sid)
+}
+
+func checkConfigSecurity(sd *windows.SECURITY_DESCRIPTOR, user *windows.SID) error {
 	owner, _, err := sd.Owner()
 	if err != nil {
 		return err
 	}
-	if owner == nil || !owner.Equals(tokenUser.User.Sid) {
-		return errors.New("configuration must be owned by the current user")
+	// A Windows token can give newly created files to the built-in
+	// Administrators group, which is already trusted to write the config.
+	if owner == nil || (!owner.Equals(user) && !owner.IsWellKnown(windows.WinBuiltinAdministratorsSid)) {
+		return errors.New("configuration must be owned by the current user or Windows Administrators")
 	}
-	return checkConfigDACL(sd, owner)
+	return checkConfigDACL(sd, user)
 }
 
-func checkConfigDACL(sd *windows.SECURITY_DESCRIPTOR, owner *windows.SID) error {
+func checkConfigDACL(sd *windows.SECURITY_DESCRIPTOR, user *windows.SID) error {
 	acl, _, err := sd.DACL()
 	if err != nil || acl == nil {
 		return errors.New("configuration must have a restricted Windows ACL")
@@ -99,7 +105,7 @@ func checkConfigDACL(sd *windows.SECURITY_DESCRIPTOR, owner *windows.SID) error 
 			continue
 		}
 		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
-		if !sid.Equals(owner) && !sid.IsWellKnown(windows.WinCreatorOwnerRightsSid) &&
+		if !sid.Equals(user) && !sid.IsWellKnown(windows.WinCreatorOwnerRightsSid) &&
 			!sid.IsWellKnown(windows.WinLocalSystemSid) && !sid.IsWellKnown(windows.WinBuiltinAdministratorsSid) {
 			return errors.New("configuration grants write access to an untrusted Windows principal")
 		}

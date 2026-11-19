@@ -210,7 +210,7 @@ El seguimiento detecta reemplazos y truncamientos observados entre comprobacione
 | `--log-file RUTA` | Añadir logs a un archivo; por defecto usa stderr. El directorio debe existir. |
 | `--verbose` | Logs de diagnóstico sin contenido de mensajes ni llaves. |
 
-Usa rutas dentro de directorios de confianza para la configuración y los logs. La apertura de ambos archivos rechaza enlaces simbólicos y exige archivos regulares. La configuración debe pertenecer al usuario que ejecuta el proxy. En Unix se permite la lectura al grupo y a otros usuarios, y la escritura queda reservada al propietario. En macOS también se rechazan ACL extendidas en la configuración. En Windows, la ACL solo puede conceder escritura al propietario, SYSTEM y el grupo Administradores.
+Usa rutas dentro de directorios de confianza para la configuración y los logs. La apertura de ambos archivos rechaza enlaces simbólicos y exige archivos regulares. En Unix, la configuración debe pertenecer al usuario que ejecuta el proxy. Se permite la lectura al grupo y a otros usuarios, y la escritura queda reservada al propietario. En macOS también se rechazan ACL extendidas en la configuración. En Windows, el propietario puede ser el usuario que ejecuta el proxy o el grupo local Administradores. La ACL solo puede conceder escritura al usuario, a SYSTEM y a Administradores.
 
 Si tienes otras llaves cargadas, utiliza `--fingerprint` con la huella obtenida de `ssh-add -l` mientras tu llave está cargada en el agente original. Sin ese filtro, un listado con alguna llave se considera suficiente. Una firma fallida para una llave ausente también dispara el desbloqueo; una firma rechazada para una llave que sigue cargada se devuelve sin mostrar un diálogo ajeno al motivo del rechazo.
 
